@@ -87,6 +87,9 @@ jobs:
           echo "Step 8: Checking service status..."
           systemctl status shadowsocks-libev-local@oracle
 
+          echo "Step 9: Checking list status..."
+          sudo lsof -P -i -n
+
           sleep 3
           if sudo systemctl is-active shadowsocks-libev-local@oracle; then
             echo "✅ Shadowsocks oracle service is running successfully!"
