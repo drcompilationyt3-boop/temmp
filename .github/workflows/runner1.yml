@@ -1,4 +1,4 @@
-name: "runner 3"
+name: runner 3
 
 on:
   schedule:
@@ -28,103 +28,74 @@ jobs:
         uses: actions/checkout@v4
 
       # -------------------------
-      # Shadowsocks: install + configure oracle.json
+      # Shadowsocks: install + configure oracle.json (manual steps version)
       # -------------------------
-      - name: Install shadowsocks-libev and write /etc/shadowsocks-libev/oracle.json
-        # do not print secrets; step env reads secrets and builds file locally then moves into /etc
+      - name: Install and configure Shadowsocks (following manual steps)
         env:
-          SHADOWSOCKS_SERVER: ${{ secrets.SHADOWSOCKS_SERVER || '' }}
-          SHADOWSOCKS_PASSWORD: ${{ secrets.SHADOWSOCKS_PASSWORD || '' }}
+          SHADOWSOCKS_SERVER: ${{ secrets.SHADOWSOCKS_SERVER }}
+          SHADOWSOCKS_PASSWORD: ${{ secrets.SHADOWSOCKS_PASSWORD }}
           SHADOWSOCKS_LOCAL_ADDRESS: ${{ secrets.SHADOWSOCKS_LOCAL_ADDRESS || '127.0.0.1' }}
-          SHADOWSOCKS_LOCAL_PORT: ${{ secrets.SHADOWSOCKS_LOCAL_PORT || '1080' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # ensure required secrets exist (fail early with clear message)
-          if [ -z "${SHADOWSOCKS_SERVER:-}" ] || [ -z "${SHADOWSOCKS_PASSWORD:-}" ]; then
-            echo "ERROR: SHADOWSOCKS_SERVER and SHADOWSOCKS_PASSWORD secrets must be set." >&2
-            exit 1
-          fi
-
-          echo "Installing shadowsocks-libev (non-interactive)..."
+          echo "Step 1: Installing shadowsocks-libev..."
           sudo apt-get update -y
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y shadowsocks-libev
+          sudo apt-get install -y shadowsocks-libev
 
-          # quick status check (non-fatal)
+          echo "Step 2: Checking initial service status..."
           sudo systemctl status shadowsocks-libev || true
 
-          # disable any legacy global config (non-fatal)
+          echo "Step 3: Disabling shadowsocks-libev service..."
           sudo systemctl disable shadowsocks-libev --now || true
 
-          # prepare /etc/shadowsocks-libev and preserve existing config if present (best-effort)
-          sudo mkdir -p /etc/shadowsocks-libev
-          if [ -f /etc/shadowsocks-libev/config.json ]; then
-            sudo cp -n /etc/shadowsocks-libev/config.json /etc/shadowsocks-libev/config.json.default || true
+          echo "Step 4: Configuring /etc/shadowsocks-libev directory..."
+          sudo mkdir -p /etc/shadowsocks-libev/
+          cd /etc/shadowsocks-libev/
+
+          if [ -f config.json ]; then
+            sudo mv config.json config.json.default
+            echo "Backed up existing config.json to config.json.default"
+          else
+            echo "No existing config.json found, creating default backup..."
+            sudo touch config.json.default
           fi
 
-          # build oracle.json in a secure temp file (owner-only)
-          umask 077
-          TMPFILE="$(mktemp)"
-          cat > "$TMPFILE" <<'JSON_EOF'
+          echo "Step 5: Creating oracle.json..."
+          if [ -f config.json.default ]; then
+            echo "Default config content (for reference):"
+            sudo cat config.json.default | head -20 || true
+          fi
+
+          sudo tee oracle.json > /dev/null <<EOF
           {
-            "server": "__SHADOWSOCKS_SERVER__",
-            "mode": "tcp_and_udp",
+            "server": "$SHADOWSOCKS_SERVER",
             "server_port": 8388,
-            "local_address": "__SHADOWSOCKS_LOCAL_ADDRESS__",
-            "local_port": __SHADOWSOCKS_LOCAL_PORT__,
-            "password": "__SHADOWSOCKS_PASSWORD__",
-            "timeout": 86400,
+            "local_address": "$SHADOWSOCKS_LOCAL_ADDRESS",
+            "local_port": 1080,
+            "password": "$SHADOWSOCKS_PASSWORD",
+            "timeout": 300,
             "method": "chacha20-ietf-poly1305"
           }
-          JSON_EOF
+          EOF
 
-          # substitute secrets into the temp file without printing them
-          sed -i "s|__SHADOWSOCKS_SERVER__|${SHADOWSOCKS_SERVER}|g" "$TMPFILE"
-          sed -i "s|__SHADOWSOCKS_LOCAL_ADDRESS__|${SHADOWSOCKS_LOCAL_ADDRESS}|g" "$TMPFILE"
-          sed -i "s|__SHADOWSOCKS_LOCAL_PORT__|${SHADOWSOCKS_LOCAL_PORT}|g" "$TMPFILE"
-          sed -i "s|__SHADOWSOCKS_PASSWORD__|${SHADOWSOCKS_PASSWORD}|g" "$TMPFILE"
+          echo "Step 6: oracle.json content:"
+          sudo cat oracle.json
 
-          # validate JSON before moving it into /etc (do NOT print the file - it contains secrets)
-          if command -v jq >/dev/null 2>&1; then
-            if ! jq . "$TMPFILE" >/dev/null 2>&1; then
-              echo "ERROR: generated oracle.json is not valid JSON (jq)." >&2
-              exit 1
-            fi
+          echo "Step 7: Enabling and starting shadowsocks-libev-local@oracle..."
+          sudo systemctl enable shadowsocks-libev-local@oracle --now
+
+          echo "Step 8: Checking service status..."
+          systemctl status shadowsocks-libev-local@oracle
+
+          sleep 3
+          if sudo systemctl is-active shadowsocks-libev-local@oracle; then
+            echo "✅ Shadowsocks oracle service is running successfully!"
           else
-            if ! python3 -m json.tool "$TMPFILE" >/dev/null 2>&1; then
-              echo "ERROR: generated oracle.json is not valid JSON (python json.tool)." >&2
-              exit 1
-            fi
-          fi
-
-          # move into place and lock down
-          sudo mv "$TMPFILE" /etc/shadowsocks-libev/oracle.json
-          sudo chown root:root /etc/shadowsocks-libev/oracle.json
-          sudo chmod 600 /etc/shadowsocks-libev/oracle.json
-
-          # enable the local service instance for oracle, show logs on failure
-          sudo systemctl daemon-reload || true
-          if ! sudo systemctl enable --now shadowsocks-libev-local@oracle; then
-            echo "ERROR: failed to enable/start shadowsocks-libev-local@oracle; dumping status & journal" >&2
-            sudo systemctl status shadowsocks-libev-local@oracle --no-pager -l || true
-            sudo journalctl -u shadowsocks-libev-local@oracle --no-pager -n 200 || true
+            echo "❌ Service failed to start. Checking logs..."
+            sudo journalctl -u shadowsocks-libev-local@oracle -n 20 --no-pager
             exit 1
           fi
-
-          # wait briefly for it to become active
-          for i in {1..10}; do
-            if sudo systemctl is-active --quiet shadowsocks-libev-local@oracle; then
-              echo "shadowsocks-libev-local@oracle is active"
-              break
-            fi
-            echo "waiting for shadowsocks service to become active... ($i/10)"
-            sleep 1
-          done
-
-          # final status + logs tail (non-sensitive)
-          sudo systemctl status shadowsocks-libev-local@oracle --no-pager -l || true
-          sudo journalctl -u shadowsocks-libev-local@oracle --no-pager -n 200 || true
 
       # -------------------------
       # End shadowsocks block
