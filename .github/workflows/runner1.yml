@@ -41,7 +41,7 @@ jobs:
 
           echo "Step 1: Installing shadowsocks-libev..."
           sudo apt-get update -y
-          sudo apt-get install -y shadowsocks-libev
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y shadowsocks-libev
 
           echo "Step 2: Checking initial service status..."
           sudo systemctl status shadowsocks-libev || true
@@ -50,7 +50,6 @@ jobs:
           sudo systemctl disable shadowsocks-libev --now || true
 
           echo "Step 4: Configuring /etc/shadowsocks-libev directory..."
-          sudo mkdir -p /etc/shadowsocks-libev/
           cd /etc/shadowsocks-libev/
 
           if [ -f config.json ]; then
