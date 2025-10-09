@@ -26,6 +26,73 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+      # -------------------------
+      # Shadowsocks: install + configure oracle.json
+      # -------------------------
+      - name: Install shadowsocks-libev and write /etc/shadowsocks-libev/oracle.json
+        # do not print secrets; step env reads secrets and builds file locally then moves into /etc
+        env:
+          SHADOWSOCKS_SERVER: ${{ secrets.SHADOWSOCKS_SERVER || '' }}
+          SHADOWSOCKS_PASSWORD: ${{ secrets.SHADOWSOCKS_PASSWORD || '' }}
+          SHADOWSOCKS_LOCAL_ADDRESS: ${{ secrets.SHADOWSOCKS_LOCAL_ADDRESS || '127.0.0.1' }}
+          SHADOWSOCKS_LOCAL_PORT: ${{ secrets.SHADOWSOCKS_LOCAL_PORT || '1080' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # ensure required secrets exist (fail early with clear message)
+          if [ -z "${SHADOWSOCKS_SERVER:-}" ] || [ -z "${SHADOWSOCKS_PASSWORD:-}" ]; then
+            echo "ERROR: SHADOWSOCKS_SERVER and SHADOWSOCKS_PASSWORD secrets must be set." >&2
+            exit 1
+          fi
+
+          echo "Installing shadowsocks-libev (non-interactive)..."
+          sudo apt-get update -y
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y shadowsocks-libev
+
+          # quick status check (non-fatal)
+          sudo systemctl status shadowsocks-libev || true
+
+          # disable any legacy global config (non-fatal)
+          sudo systemctl disable shadowsocks-libev --now || true
+
+          # prepare /etc/shadowsocks-libev
+          sudo mkdir -p /etc/shadowsocks-libev
+          # preserve existing config if present (best-effort)
+          if [ -f /etc/shadowsocks-libev/config.json ]; then
+            sudo cp -n /etc/shadowsocks-libev/config.json /etc/shadowsocks-libev/config.json.default || true
+          fi
+
+          # build oracle.json in a secure temp file (owner-only)
+          TMPFILE="$(mktemp)"
+          umask 077
+          cat > "$TMPFILE" <<EOF
+          {
+            "server":"${SHADOWSOCKS_SERVER}",
+            "mode":"tcp_and_udp",
+            "server_port":8388,
+            "local_address":"${SHADOWSOCKS_LOCAL_ADDRESS}",
+            "local_port":${SHADOWSOCKS_LOCAL_PORT},
+            "password":"${SHADOWSOCKS_PASSWORD}",
+            "timeout":86400,
+            "method":"chacha20-ietf-poly1305"
+          }
+          EOF
+
+          # move into place and lock down
+          sudo mv "$TMPFILE" /etc/shadowsocks-libev/oracle.json
+          sudo chown root:root /etc/shadowsocks-libev/oracle.json
+          sudo chmod 600 /etc/shadowsocks-libev/oracle.json
+
+          # enable the local service instance for oracle (best-effort)
+          sudo systemctl enable shadowsocks-libev-local@oracle --now || true
+
+          # show unit status (non-fatal) so you can quickly confirm in logs if it started
+          sudo systemctl is-active shadowsocks-libev-local@oracle || true
+
+      # -------------------------
+      # End shadowsocks block
+      # -------------------------
 
       - name: Setup Node
         uses: actions/setup-node@v4
