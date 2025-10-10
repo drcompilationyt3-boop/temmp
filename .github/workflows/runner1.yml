@@ -79,7 +79,7 @@ jobs:
           EOF
 
           echo "Step 6: oracle.json content:"
-          sudo cat oracle.json
+
 
           echo "Step 7: Enabling and starting shadowsocks-libev-local@oracle..."
           sudo systemctl enable shadowsocks-libev-local@oracle --now
