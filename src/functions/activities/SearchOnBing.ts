@@ -57,6 +57,8 @@ export class SearchOnBing extends Workers {
 
     /**
      * Resolve a short search query for a given promotion title.
+     * Try LLM first (if an OpenRouter API key is available). If LLM fails or no key,
+     * fall back to local queries.json or remote queries.json, then finally the title.
      */
     private async getSearchQuery(title: string): Promise<string> {
         await this.bot.utils.wait(this.bot.utils.randomNumber(500, 1500))
@@ -69,6 +71,52 @@ export class SearchOnBing extends Workers {
         let queries: Queries[] = []
 
         try {
+            // --- Attempt LLM first if API key present ---
+            const envKey = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_API_KEY.trim() : undefined
+            const cfgKey = this.bot.config?.openRouterApiKey ? String(this.bot.config.openRouterApiKey).trim() : undefined
+            const apiKey = envKey || cfgKey
+
+            if (apiKey) {
+                this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `Attempting LLM-first fallback for title: ${title}`)
+                try {
+                    const llmQuery = await this.callOpenRouterForQuery(title, apiKey)
+                    if (llmQuery) {
+                        this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `LLM-first answer: ${llmQuery} | question: ${title}`)
+
+                        if (this.bot.config && this.bot.config.cacheGeneratedQueries) {
+                            try {
+                                const localPath = path.join(__dirname, '../queries.json')
+                                let existing: Queries[] = []
+                                if (fs.existsSync(localPath)) {
+                                    try {
+                                        existing = JSON.parse(fs.readFileSync(localPath, 'utf8'))
+                                        if (!Array.isArray(existing)) existing = []
+                                    } catch {
+                                        existing = []
+                                    }
+                                }
+                                existing.push({ title, queries: [llmQuery] })
+                                fs.writeFileSync(localPath, JSON.stringify(existing, null, 2), 'utf8')
+                                this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `Cached generated query for title: ${title}`)
+                            } catch (cacheErr) {
+                                this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `Caching failed: ${String(cacheErr)}`, 'warn')
+                            }
+                        }
+
+                        return llmQuery
+                    } else {
+                        this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', 'LLM-first fallback returned empty or failed; continuing to other sources', 'warn')
+                    }
+                } catch (llmErr) {
+                    // callOpenRouterForQuery already logs details; still note and continue.
+                    this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `LLM-first attempt threw: ${String(llmErr)}. Falling back to queries.json`, 'warn')
+                }
+            } else {
+                this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', 'No OpenRouter API key found (process.env.OPENROUTER_API_KEY or bot.config.openRouterApiKey). Skipping LLM-first step.', 'log')
+            }
+
+            // --- If we get here, either no API key or LLM failed; proceed to local/remote queries ---
+
             if (this.bot.config && this.bot.config.searchOnBingLocalQueries) {
                 const localPath = path.join(__dirname, '../queries.json')
                 try {
@@ -121,47 +169,8 @@ export class SearchOnBing extends Workers {
                 return answer
             }
 
-            // LLM fallback when API key exists (runs regardless of enableOpenRouterForQueries)
-            this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `No local/remote query found for: ${title}. Attempting LLM fallback if API key present...`)
-
-            const envKey = process.env.OPENROUTER_API_KEY ? process.env.OPENROUTER_API_KEY.trim() : undefined
-            const cfgKey = this.bot.config?.openRouterApiKey ? String(this.bot.config.openRouterApiKey).trim() : undefined
-            const apiKey = envKey || cfgKey
-
-            if (apiKey) {
-                const llmQuery = await this.callOpenRouterForQuery(title, apiKey)
-                if (llmQuery) {
-                    this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `LLM answer: ${llmQuery} | question: ${title}`)
-
-                    if (this.bot.config && this.bot.config.cacheGeneratedQueries) {
-                        try {
-                            const localPath = path.join(__dirname, '../queries.json')
-                            let existing: Queries[] = []
-                            if (fs.existsSync(localPath)) {
-                                try {
-                                    existing = JSON.parse(fs.readFileSync(localPath, 'utf8'))
-                                    if (!Array.isArray(existing)) existing = []
-                                } catch {
-                                    existing = []
-                                }
-                            }
-                            existing.push({ title, queries: [llmQuery] })
-                            fs.writeFileSync(localPath, JSON.stringify(existing, null, 2), 'utf8')
-                            this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `Cached generated query for title: ${title}`)
-                        } catch (cacheErr) {
-                            this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `Caching failed: ${String(cacheErr)}`, 'warn')
-                        }
-                    }
-
-                    return llmQuery
-                } else {
-                    this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', 'LLM fallback failed or returned empty', 'warn')
-                }
-            } else {
-                this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', 'No OpenRouter API key found (process.env.OPENROUTER_API_KEY or bot.config.openRouterApiKey). Skipping LLM fallback.', 'log')
-            }
-
-            this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `Falling back to title for query: ${title}`)
+            // No LLM result earlier and no local/remote queries matched: fall back to title
+            this.bot.log(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', `No local/remote query found for: ${title}. Falling back to title for query.`)
             return title
 
         } catch (error) {
