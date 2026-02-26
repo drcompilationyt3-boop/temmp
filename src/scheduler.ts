@@ -6,6 +6,7 @@ import { MicrosoftRewardsBot } from './index'
 import { loadConfig } from './util/Load'
 import { log } from './util/Logger'
 import type { Config } from './interface/Config'
+//damn
 
 function resolveTimeParts(schedule: Config['schedule'] | undefined): { tz: string; hour: number; minute: number } {
   const tz = (schedule?.timeZone && IANAZone.isValidZone(schedule.timeZone)) ? schedule.timeZone : 'UTC'
